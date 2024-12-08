@@ -60,6 +60,9 @@ loop {
 }
 ```
 
+Working with a spring per dimension? See the
+[collection](./examples/collection.rs) example.
+
 ### Why so many types?
 
 - A `Spring` is simply the current state of a spring that is being simulated.

@@ -29,7 +29,7 @@
 use num_traits::Float;
 
 pub mod prelude {
-    pub use crate::{Spring, SpringConfig, SpringParams, SpringTimeStep};
+    pub use crate::{Spring, SpringCollection, SpringConfig, SpringParams, SpringTimeStep};
 }
 
 /// Configuration options for a spring. Composed of its `angular_freq` and `damping_ratio`.
@@ -154,9 +154,9 @@ impl<F: Float> Default for SpringTimeStep<F> {
 
 impl<F: Float> SpringTimeStep<F> {
     /// Derive a spring time step from a particular delta time.
-    pub fn new(state: SpringParams<F>, delta: F) -> Self {
+    pub fn new(state: impl Into<SpringParams<F>>, delta: F) -> Self {
         use SpringParams::*;
-        match state {
+        match state.into() {
             Static => Self::default(),
 
             OverDamped { zb, z1, z2 } => {
@@ -214,6 +214,7 @@ impl<F: Float> SpringTimeStep<F> {
 
     /// Update multiple springs using this time step. Simply calls [`Spring::update`]
     /// on each passed spring.
+    #[inline]
     pub fn update_many(self, springs: &mut [&mut Spring<F>]) {
         for spring in springs {
             spring.update(self);
@@ -222,11 +223,21 @@ impl<F: Float> SpringTimeStep<F> {
 }
 
 /// An instance of a spring and its current physical properties, like its position, velocity, and target equilibrium.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Spring<F> {
     pub position: F,
     pub velocity: F,
     pub equilibrium: F,
+}
+
+impl<F: Float> Default for Spring<F> {
+    fn default() -> Self {
+        Self {
+            position: F::zero(),
+            velocity: F::zero(),
+            equilibrium: F::zero(),
+        }
+    }
 }
 
 impl<F: Float> Spring<F> {
@@ -252,8 +263,96 @@ impl<F: Float> Spring<F> {
     /// Will internally create a [`SpringTimeStep`] for this call.
     ///
     /// If you are updating multiple springs with the same properties,
-    /// consider using [`SpringTimeStep::new`] and [`SpringTimeStep::update_many`].
+    /// consider using [`SpringTimeStep::new`] and [`SpringTimeStep::update_many`]
+    /// or create a [`SpringCollection`].
+    #[inline]
     pub fn update_single(&mut self, state: SpringParams<F>, delta: F) {
         self.update(SpringTimeStep::new(state, delta));
     }
 }
+
+/// A fixed-size collection of springs that all share the same spring parameters.
+/// Useful for creating springs over multiple dimensions (i.e. 2D or 3D springs).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpringCollection<F, const N: usize> {
+    params: SpringParams<F>,
+    pub springs: [Spring<F>; N],
+}
+
+impl<F: Float, const N: usize, T> From<T> for SpringCollection<F, N>
+where
+    T: Into<SpringParams<F>>,
+{
+    fn from(params: T) -> Self {
+        Self {
+            params: params.into(),
+            springs: [Spring::default(); N],
+        }
+    }
+}
+
+impl<F: Float, const N: usize> SpringCollection<F, N> {
+    /// Construct `N` springs, all starting at a specified `equilibrium`.
+    pub fn from_equilibrium(params: impl Into<SpringParams<F>>, equilibrium: F) -> Self {
+        Self {
+            params: params.into(),
+            springs: [Spring::from_equilibrium(equilibrium); N],
+        }
+    }
+
+    /// Construct `N` springs, each with a particular equilibrium.
+    pub fn from_equilibriums(params: impl Into<SpringParams<F>>, equilibriums: [F; N]) -> Self {
+        Self {
+            params: params.into(),
+            springs: equilibriums.map(Spring::from_equilibrium),
+        }
+    }
+
+    /// Update all springs over the specified delta. Constructs a new [`SpringTimeStep`]
+    /// for this usage.
+    #[inline]
+    pub fn update(&mut self, delta: F) {
+        self.update_with(SpringTimeStep::new(self.params, delta));
+    }
+
+    /// Update all springs using the specified `time_step`.
+    ///
+    /// **Note:** this time step need not be derived from [`SpringCollection::params`].
+    /// The implementation of this method uses all constants from `time_step`.
+    #[inline]
+    pub fn update_with(&mut self, time_step: SpringTimeStep<F>) {
+        for spring in self.springs.iter_mut() {
+            spring.update(time_step);
+        }
+    }
+}
+
+macro_rules! impl_collection_props {
+    ( $prop:ident ( $plural:ident ) => $set_prop:ident ( $set_plural:ident ) ) => {
+        impl<F: Float, const N: usize> SpringCollection<F, N> {
+            #[doc = concat!("The array of current spring ", stringify!($plural), ".")]
+            #[inline]
+            pub fn $plural(&self) -> [F; N] {
+                self.springs.map(|spring| spring.$prop)
+            }
+
+            #[doc = concat!("Set a particular spring's ", stringify!($prop), ".")]
+            #[inline]
+            pub fn $set_prop(&mut self, index: usize, $prop: F) {
+                self.springs[index].$prop = $prop;
+            }
+
+            #[doc = concat!("Set all spring ", stringify!($plural), ".")]
+            #[inline]
+            pub fn $set_plural(&mut self, $plural: [F; N]) {
+                for (spring, $prop) in self.springs.iter_mut().zip($plural.into_iter()) {
+                    spring.$prop = $prop;
+                }
+            }
+        }
+    };
+}
+
+impl_collection_props!(position (positions) => set_position (set_positions));
+impl_collection_props!(velocity (velocities) => set_velocity (set_velocities));
+impl_collection_props!(equilibrium (equilibriums) => set_equilibrium (set_equilibriums));
