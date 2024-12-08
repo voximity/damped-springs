@@ -2,6 +2,9 @@
 name = "damped-springs"
 version = "0.1.0"
 edition = "2021"
+description = "Implementation of damped springs for smooth and springy motion."
+license = "MIT"
+license-file = "LICENSE"
 
 [dependencies]
 num-traits = "0.2.19"
