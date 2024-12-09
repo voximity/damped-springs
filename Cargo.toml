@@ -1,6 +1,6 @@
 [package]
 name = "damped-springs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Implementation of damped springs for smooth and springy motion."
 license = "MIT"

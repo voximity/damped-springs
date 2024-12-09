@@ -155,11 +155,10 @@ impl<F: Float> Default for SpringTimeStep<F> {
 impl<F: Float> SpringTimeStep<F> {
     /// Derive a spring time step from a particular delta time.
     pub fn new(state: impl Into<SpringParams<F>>, delta: F) -> Self {
-        use SpringParams::*;
         match state.into() {
-            Static => Self::default(),
+            SpringParams::Static => Self::default(),
 
-            OverDamped { zb, z1, z2 } => {
+            SpringParams::OverDamped { zb, z1, z2 } => {
                 let e1 = (z1 * delta).exp();
                 let e2 = (z2 * delta).exp();
                 let inv_2zb = F::one() / ((F::one() + F::one()) * zb);
@@ -178,7 +177,7 @@ impl<F: Float> SpringTimeStep<F> {
                 }
             }
 
-            UnderDamped { oz, a } => {
+            SpringParams::UnderDamped { oz, a } => {
                 let exp = (-oz * delta).exp();
                 let cos = (a * delta).cos();
                 let sin = (a * delta).sin();
@@ -197,7 +196,7 @@ impl<F: Float> SpringTimeStep<F> {
                 }
             }
 
-            CriticallyDamped { angular_freq } => {
+            SpringParams::CriticallyDamped { angular_freq } => {
                 let exp = (-angular_freq * delta).exp();
                 let time_exp = delta * exp;
                 let time_exp_freq = time_exp * angular_freq;
@@ -241,6 +240,20 @@ impl<F: Float> Default for Spring<F> {
 }
 
 impl<F: Float> Spring<F> {
+    #[inline]
+    fn update_internal(
+        position: &mut F,
+        velocity: &mut F,
+        equilibrium: F,
+        time_step: SpringTimeStep<F>,
+    ) {
+        let op = *position - equilibrium;
+        let ov = *velocity;
+
+        *position = op * time_step.pp + ov * time_step.pv + equilibrium;
+        *velocity = op * time_step.vp + ov * time_step.vv;
+    }
+
     /// Create a new spring from a start equilibrium.
     pub fn from_equilibrium(equilibrium: F) -> Self {
         Self {
@@ -252,11 +265,12 @@ impl<F: Float> Spring<F> {
 
     /// Update this spring using a pre-computed [`SpringTimeStep`].
     pub fn update(&mut self, time_step: SpringTimeStep<F>) {
-        let op = self.position - self.equilibrium;
-        let ov = self.velocity;
-
-        self.position = op * time_step.pp + ov * time_step.pv + self.equilibrium;
-        self.velocity = op * time_step.vp + ov * time_step.vv;
+        Self::update_internal(
+            &mut self.position,
+            &mut self.velocity,
+            self.equilibrium,
+            time_step,
+        );
     }
 
     /// Update this spring (and this spring only) using a [`SpringParams`] and a delta time.
@@ -276,7 +290,9 @@ impl<F: Float> Spring<F> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpringCollection<F, const N: usize> {
     params: SpringParams<F>,
-    pub springs: [Spring<F>; N],
+    positions: [F; N],
+    velocities: [F; N],
+    equilibriums: [F; N],
 }
 
 impl<F: Float, const N: usize, T> From<T> for SpringCollection<F, N>
@@ -286,7 +302,9 @@ where
     fn from(params: T) -> Self {
         Self {
             params: params.into(),
-            springs: [Spring::default(); N],
+            positions: [F::zero(); N],
+            velocities: [F::zero(); N],
+            equilibriums: [F::zero(); N],
         }
     }
 }
@@ -296,7 +314,9 @@ impl<F: Float, const N: usize> SpringCollection<F, N> {
     pub fn from_equilibrium(params: impl Into<SpringParams<F>>, equilibrium: F) -> Self {
         Self {
             params: params.into(),
-            springs: [Spring::from_equilibrium(equilibrium); N],
+            positions: [F::zero(); N],
+            velocities: [F::zero(); N],
+            equilibriums: [equilibrium; N],
         }
     }
 
@@ -304,7 +324,9 @@ impl<F: Float, const N: usize> SpringCollection<F, N> {
     pub fn from_equilibriums(params: impl Into<SpringParams<F>>, equilibriums: [F; N]) -> Self {
         Self {
             params: params.into(),
-            springs: equilibriums.map(Spring::from_equilibrium),
+            positions: [F::zero(); N],
+            velocities: [F::zero(); N],
+            equilibriums,
         }
     }
 
@@ -321,38 +343,51 @@ impl<F: Float, const N: usize> SpringCollection<F, N> {
     /// The implementation of this method uses all constants from `time_step`.
     #[inline]
     pub fn update_with(&mut self, time_step: SpringTimeStep<F>) {
-        for spring in self.springs.iter_mut() {
-            spring.update(time_step);
+        for i in 0..N {
+            Spring::update_internal(
+                &mut self.positions[i],
+                &mut self.velocities[i],
+                self.equilibriums[i],
+                time_step,
+            );
         }
     }
 }
 
 macro_rules! impl_collection_props {
-    ( $prop:ident ( $plural:ident ) => $set_prop:ident ( $set_plural:ident ) ) => {
+    ( $prop:ident , $prop_mut:ident ) => {
         impl<F: Float, const N: usize> SpringCollection<F, N> {
             #[doc = concat!("The array of current spring ", stringify!($plural), ".")]
             #[inline]
-            pub fn $plural(&self) -> [F; N] {
-                self.springs.map(|spring| spring.$prop)
+            pub fn $prop(&self) -> &[F; N] {
+                &self.$prop
             }
 
-            #[doc = concat!("Set a particular spring's ", stringify!($prop), ".")]
+            #[doc = concat!("Mutable reference of current spring ", stringify!($prop), ".")]
             #[inline]
-            pub fn $set_prop(&mut self, index: usize, $prop: F) {
-                self.springs[index].$prop = $prop;
-            }
-
-            #[doc = concat!("Set all spring ", stringify!($plural), ".")]
-            #[inline]
-            pub fn $set_plural(&mut self, $plural: [F; N]) {
-                for (spring, $prop) in self.springs.iter_mut().zip($plural.into_iter()) {
-                    spring.$prop = $prop;
-                }
+            pub fn $prop_mut(&mut self) -> &mut [F; N] {
+                &mut self.$prop
             }
         }
     };
 }
 
-impl_collection_props!(position (positions) => set_position (set_positions));
-impl_collection_props!(velocity (velocities) => set_velocity (set_velocities));
-impl_collection_props!(equilibrium (equilibriums) => set_equilibrium (set_equilibriums));
+impl_collection_props!(positions, positions_mut);
+impl_collection_props!(velocities, velocities_mut);
+impl_collection_props!(equilibriums, equilibriums_mut);
+
+impl<F: Float, const N: usize> From<SpringCollection<F, N>> for [Spring<F>; N] {
+    fn from(value: SpringCollection<F, N>) -> Self {
+        let mut i = 0;
+
+        value.positions.map(|position| {
+            let spring = Spring {
+                position,
+                velocity: value.velocities[i],
+                equilibrium: value.equilibriums[i],
+            };
+            i += 1;
+            spring
+        })
+    }
+}
